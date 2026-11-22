@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Генератор персонажей для настольной ролевой игры Adventures in Fantasy (1979).">
+  <meta name="color-scheme" content="light">
+  <title>Лист искателя приключений — Adventures in Fantasy</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="wrap masthead-inner">
+      <div class="brand"><span class="seal" aria-hidden="true">A<span>i</span>F</span><span>Adventures in Fantasy <small>Дэйв Арнесон · Ричард Снайдер · 1979</small></span></div>
+      <div class="actions toolbar">
+        <button type="button" data-action="import">Открыть JSON</button>
+        <button type="button" data-action="export">Скачать JSON</button>
+        <button type="button" data-action="print" class="outline">Печать</button>
+        <input type="file" id="import-file" accept="application/json,.json" hidden>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="title-row">
+      <div><h1>Лист искателя приключений</h1><p class="subtitle">Генератор персонажа для базовой игры</p></div>
+      <button type="button" data-action="new" class="primary">Новый персонаж</button>
+    </div>
+    <section id="summary" class="summary" aria-label="Сводка персонажа"></section>
+    <div class="workspace">
+      <aside class="sidebar">
+        <nav id="navigation" aria-label="Разделы генератора">
+          <a href="#origin" data-tab="origin">Происхождение</a>
+          <a href="#education" data-tab="education">Обучение</a>
+          <a href="#equipment" data-tab="equipment">Снаряжение</a>
+          <a href="#magic" data-tab="magic">Магия</a>
+          <a href="#sheet" data-tab="sheet">Лист персонажа</a>
+        </nav>
+        <details class="settings">
+          <summary>Настройки кампании</summary>
+          <div id="settings"></div>
+        </details>
+      </aside>
+      <section id="panel" aria-label="Рабочая область"></section>
+    </div>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </main>
+  <footer class="wrap footer">Adventures in Fantasy · 1979 <span>Таблицы A–E, N и книга фэйри и магии</span></footer>
+  <section id="print-sheet" aria-label="Печатный лист персонажа"></section>
+  <noscript>Для работы генератора включи JavaScript.</noscript>
+</body>
+</html>
