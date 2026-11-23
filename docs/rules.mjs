@@ -1,6 +1,7 @@
 import {
   attributes, ages, ranks, courses, gear, soldierKit, soldierSack, spellList, combatMatrix,
 } from './data.mjs';
+import {describeInheritance} from './inheritance.mjs';
 
 export const clamp = (value, lower, upper) => Math.max(lower, Math.min(upper, value));
 export const die = (sides, random = Math.random) => Math.floor(random() * sides) + 1;
@@ -40,7 +41,7 @@ export function blankCharacter() {
     rank: 2, age: 20, rolls: null, soldier: false, courseRolls: false, education: [],
     trainingBonus: 0, spells: [], experience: 1, items: [], kit: {}, stock: {}, fundsAdjustment: 0,
     rates: {spPerGp: 10, cpPerSp: 10, coinsPerLb: 0},
-    characterWeight: 150, rider: '', mountTraining: {}, mortality: null, wounds: 0,
+    characterWeight: 150, rider: '', mountTraining: {}, mortality: null, wounds: 0, inheritance: null, heirloomGear: {},
   };
 }
 
@@ -201,12 +202,18 @@ export function coins(value, rates) {
   return {gp, sp, cp};
 }
 
-export function inventory(state) {
+function inventory(state, inheritance) {
   const kit = state.soldier ? soldierKit.map((id) => ({
     uid: 'kit-' + id, id, qty: 1, paid: false, position: state.kit[id]?.position ?? 'person',
     equipped: state.kit[id]?.equipped ?? ['helmet', 'lshield'].includes(id),
   })) : [];
-  return [...kit, ...state.items].map((row) => {
+  const heirlooms = inheritance.items.map((item) => {
+    const placement = state.heirloomGear[item.id];
+    return {uid: item.id, id: item.id, qty: 1, paid: false, custom: item, inherited: true,
+      position: placement?.position ?? 'person', equipped: placement?.equipped ?? false,
+      weight: placement?.weight};
+  });
+  return [...kit, ...heirlooms, ...state.items].map((row) => {
     const item = row.custom ?? (row.id === 'smallSack' ? soldierSack : gear[row.id]);
     const price = row.price ?? item.price;
     const unit = row.coin ?? item.coin;
@@ -227,9 +234,13 @@ export function calculate(state) {
   const hp = hitPoints(score);
   const magic = magicProfile(score.int, mastered.has('magic'), state.experience);
   const knownSpells = spellList.filter((spell) => magic.trained && spell.points <= magic.cap && state.spells.includes(spell.id));
-  const items = inventory(state);
+  const inheritance = describeInheritance(state.inheritance);
+  const items = inventory(state, inheritance);
+  const heirloomDefense = Math.max(0, ...items.filter((row) => row.position === 'person' && row.equipped)
+    .map((row) => row.item.defenseBonus ?? 0));
   const income = state.soldier ? 0 : education.income;
-  const funds = priceInCopper((social.rank.level * 10 + income) * social.age.wealth + state.fundsAdjustment, 'gp', state.rates);
+  const startingGold = (social.rank.level * 10 + income) * social.age.wealth;
+  const funds = priceInCopper(startingGold + inheritance.gold + state.fundsAdjustment, 'gp', state.rates);
   const spent = total(items.map((row) => row.cost));
   const balance = funds - spent;
   const purse = coins(Math.max(0, balance), state.rates);
@@ -247,7 +258,7 @@ export function calculate(state) {
   });
   return {
     ...social, education, score, hp, remainingHp: Math.max(0, hp - state.wounds), magic, knownSpells,
-    trained, items, income, funds, spent, balance, cashWeight, carried, pace, mounts, ridingLevel,
+    trained, items, income, funds, inheritance, heirloomDefense, spent, balance, cashWeight, carried, pace, mounts, ridingLevel,
     fatigueFree: pace.immediateFatigue ? 0 : Math.floor(score.sta + 5),
     fatigueTurns: Math.floor(score.sta / pace.fatigue),
     meleeTurns: Math.floor(score.sta / (5 * pace.fatigue)),

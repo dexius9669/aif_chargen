@@ -2,10 +2,11 @@ import {
   ages, armorRules, attributes, bodyTypes, categoryNames, courseList, courses, gear, ranks, spellList,
 } from './data.mjs';
 import {
-  blankCharacter, calculate, clamp, coins, combatChance, courseDuration, courseIssue, d100, learningChance,
+  blankCharacter, calculate, clamp, coins, combatChance, courseDuration, courseIssue, d100, die, learningChance,
   naturalDeath, newId, priceInCopper, rollOrigin, rollTraining, savingChance, studyAttempt, weaponTraining,
 } from './rules.mjs';
 import {persist, readCharacter, restore} from './state.mjs';
+import {rollInheritance} from './inheritance.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const format = new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 4});
@@ -53,6 +54,18 @@ function mortalityText() {
   if (roll.save === null) return `Бросок ${roll.check} · возрастных осложнений нет.`;
   if (roll.weeks) return `Бросок ${roll.check}, проверка Здоровья ${roll.save} · болезнь на ${roll.weeks} нед.`;
   return `Бросок ${roll.check}, проверка Здоровья ${roll.save} · естественная смерть.`;
+}
+
+function inheritanceText() {
+  const rolls = state.inheritance;
+  if (!rolls) return `Шанс при возрасте ${state.age} лет — ${state.age}%. Проверка проводится один раз при создании.`;
+  const check = `к100: ${rolls.check} при возрасте ${rolls.age} лет`;
+  if (rolls.check > rolls.age) return check + ' · наследства нет.';
+  const award = result.inheritance;
+  const contents = [
+    award.gold ? `${award.gold} з.м.` : '', ...award.items.map((item) => escape(item.name)),
+  ].filter(Boolean).join(', ');
+  return `${check} · 2к10: ${rolls.type} · ${contents}.`;
 }
 
 function renderSummary() {
@@ -104,6 +117,10 @@ function origin() {
     <div class="ability-grid">${scores}</div>
     <p class="hint">${result.trained ? 'Физическая подготовка даёт полный доступ к характеристикам.' : 'До физической подготовки рабочие Сила, Ловкость и Выносливость составляют 75% от исходных.'}</p>
     ${result.education.mastered.has('6') ? `<div class="inline-fields"><label>Прибавка за подготовку II ${numField('trainingBonus', state.trainingBonus, 2, 20)}</label>${button('training-roll', 'Бросить 2к10', '', 'class="outline"')}</div>` : ''}
+    <div class="card-subhead"><h3>Наследство</h3></div>
+    <p>${inheritanceText()}</p>
+    ${state.inheritance ? '' : button('inheritance', 'Проверить наследство', '', 'class="outline"')}
+    ${result.inheritance.items.length ? '<p class="hint"><a href="#equipment">Свойства предметов и вес в инвентаре</a></p>' : ''}
     <details class="rule-box"><summary>Естественная смерть и восстановление</summary>
       <p>${mortalityText()}</p>${button('mortality', 'Бросок за год', '', state.mortality ? 'disabled' : '')}${state.mortality ? button('clear-mortality', 'Сбросить бросок') : ''}
       <p class="micro">Полный отдых: ${fmt(result.score.hea)}% в неделю вылечить 1 Хит. Успешная проверка Здоровья при болезни или отравлении даёт ${fmt(result.recoveryWeeks)} нед. восстановления.</p>
@@ -163,19 +180,21 @@ function gearRow(row) {
   const item = row.item;
   const isMount = item.category === 'mount';
   const isService = item.category === 'service';
-  const fixed = row.uid.startsWith('kit-');
-  const defense = armorRules[row.id];
+  const fixed = row.uid.startsWith('kit-') || row.inherited;
+  const defense = armorRules[item.baseId ?? row.id];
   const tr = item.skill ? weaponTraining(row, result.education) : 1;
-  const details = [fixed ? 'Казённое' : row.paid ? money(row.cost) : 'Получено бесплатно', weight(row.weight)];
+  const details = [row.inherited ? 'Наследство' : fixed ? 'Казённое' : row.paid ? money(row.cost) : 'Получено бесплатно', weight(row.weight)];
   if (tr !== 1) details.push(tr === 1 / 3 ? 'Подготовка ⅓' : 'Подготовка ⅔');
   if (row.equipped && row.position === 'person' && defense) details.push(defense);
   return `<div class="inventory-row">
-    <div><strong>${escape(item.name)}</strong><small>${details.join(' · ')}</small></div>
+    <div><strong>${escape(item.name)}</strong><small>${details.join(' · ')}</small>
+    ${row.inherited ? `<details><summary>Свойства</summary><small>${item.notes.map(escape).join('<br>')}</small></details>` : ''}</div>
     ${fixed || isMount ? '<span class="qty-static">×1</span>' : `<label class="qty"><span class="sr-only">Количество ${escape(item.name)}</span><input type="number" min="1" max="9999" data-qty="${escape(row.uid)}" value="${row.qty}"></label>`}
     ${isMount || isService ? '' : `<label class="placement"><span class="sr-only">Где лежит ${escape(item.name)}</span><select data-position="${escape(row.uid)}">
       ${option('person', 'На себе', row.position)}${option('stashed', 'Оставлено', row.position)}
       ${result.mounts.map((mount) => option(mount.uid, mountLabel(mount), row.position)).join('')}</select></label>`}
     ${['armor', 'head', 'shield'].includes(item.category) ? `<label class="check equip"><input type="checkbox" data-equip="${escape(row.uid)}"${checked(row.equipped)}${row.position === 'person' ? '' : ' disabled'}> Надето</label>` : ''}
+    ${row.inherited ? `<label class="qty">Вес, фн.<input aria-label="Вес ${escape(item.name)}" type="number" min="0" max="1000000" step="0.001" data-heir-weight="${row.id}" value="${row.weight}"></label>` : ''}
     ${fixed ? '' : button('remove-item', 'Убрать', row.uid, 'class="small"')}`
     + '</div>';
 }
@@ -223,7 +242,8 @@ function equipment() {
     <small>${weight(row.burden)} · ${inch(row.speed)}${row.ridden ? ' · под всадником' : ''} · совместная подготовка ${row.level}</small></div>
     <label>Обучение животного <select data-mount-training="${escape(row.uid)}">${[0,1,2,3].map((level) => option(level, level, state.mountTraining[row.uid] ?? 0)).join('')}</select></label></div>`).join('');
   return section('Снаряжение', 'Цены и вес из таблиц C и D. Можно распределить груз между персонажем, животными и поклажей вне похода.', `
-    <div class="strip"><span>Старт ${money(result.funds)}</span><span>Потрачено ${money(result.spent)}</span><strong>Остаток ${money(result.balance)}</strong></div>
+    <div class="strip"><span>Старт ${money(result.funds)}</span><span>Потрачено ${money(result.spent)}</span><strong>Остаток ${money(result.balance)}</strong>
+      ${result.inheritance.gold ? `<span>Включая наследство ${result.inheritance.gold} з.м.</span>` : ''}</div>
     <div class="strip secondary"><span>Без усталости до ${weight(result.pace.comfortable)}</span><span>Предел ${weight(result.pace.maximum)}</span>
       <span>Проверка Ловкости с грузом ${result.pace.dexCheck}%</span>${result.cashWeight ? '<span>Кошель ' + weight(result.cashWeight) + '</span>' : ''}</div>
     <p class="hint">${supplySummary()}</p>
@@ -275,10 +295,11 @@ function combatPreview() {
   const weapon = carriedWeapons.find((row) => row.uid === ui.weapon);
   const mount = result.mounts.find((row) => row.ridden);
   const training = weaponTraining(weapon, result.education);
+  const swordBonus = weapon?.item.swordLimit ? 0 : weapon?.item.combatBonus ?? 0;
   const attack = combatChance({
     dex: result.score.dex, hp: result.hp, exp: state.experience, enemyBody: ui.enemyBody,
     enemyDex: ui.enemyDex, enemyHp: ui.enemyHp, enemyExp: ui.enemyMetric === 'dice' ? Math.min(15, ui.enemyExp) : ui.enemyExp,
-    training, stance: mount && mount.level < 2 ? 0.5 : 1, modifier: ui.modifier,
+    training, stance: mount && mount.level < 2 ? 0.5 : 1, modifier: ui.modifier + swordBonus,
   });
   const save = savingChance({
     cost: ui.saveCost, warrior: !result.magic.trained, dex: result.score.dex, intelligence: result.score.int,
@@ -299,8 +320,9 @@ function combatPreview() {
       <label>${ui.enemyMetric === 'dice' ? 'Кости Хитов противника' : 'Уровень опыта противника'} <input type="number" min="0" max="1000" data-ui="enemyExp" value="${ui.enemyExp}"></label>
       <label>Прочие поправки, % <input type="number" min="-200" max="200" data-ui="modifier" value="${ui.modifier}"></label>
     </div>
-    <p id="combat-result">${mountRestriction ? 'Это оружие недоступно в седле при текущей подготовке.' :
-    `<strong>Попадание ${attack.chance}%</strong> · база ${attack.base} · Ловкость ${plus(attack.dexBonus)} · размер ${plus(attack.sizeBonus)} · опыт ${plus(attack.experience)}.`}</p>
+    <p id="combat-result">${weapon?.item.magesOnly && !result.magic.trained ? 'Этот наследственный меч доступен только магу.' : mountRestriction ? 'Это оружие недоступно в седле при текущей подготовке.' :
+    `<strong>Попадание ${attack.chance}%</strong> · база ${attack.base} · Ловкость ${plus(attack.dexBonus)} · размер ${plus(attack.sizeBonus)} · опыт ${plus(attack.experience)}${swordBonus ? ' · меч +' + swordBonus : ''}.`}</p>
+    ${weapon?.item.swordLimit ? `<p class="hint">${escape(weapon.item.swordLimit)} Внеси применимый боевой бонус в «Прочие поправки».</p>` : ''}
     <div class="grid two fields">
       <label>Стоимость заклинания <select data-ui="saveCost">${[1,2,3,4,5,6,7,8,9,10,13,15].map((points) => option(points, points, ui.saveCost)).join('')}</select></label>
       <label>Уровень вражеского мага <input type="number" min="1" max="1000" data-ui="caster" value="${ui.caster}"></label>
@@ -311,7 +333,7 @@ function combatPreview() {
 
 function sheetContent(print = false) {
   const trained = courseList.filter((course) => result.education.mastered.has(course.id));
-  const defenses = result.items.filter((row) => row.position === 'person' && row.equipped && armorRules[row.id]);
+  const defenses = result.items.filter((row) => row.position === 'person' && row.equipped && armorRules[row.item.baseId ?? row.id]);
   const wornBreastplate = result.items.some((row) => row.position === 'person' && row.equipped && row.id === 'breast');
   const inv = result.items.map((row) => {
     const mount = result.mounts.find((animal) => animal.uid === row.position);
@@ -335,10 +357,13 @@ function sheetContent(print = false) {
       ${result.magic.trained ? `<h3>Магия</h3><p>${result.magic.daily} очк. в день · ${result.magic.castLimit} за боевой ход</p><p>${result.knownSpells.map((spell) => spell.name + ' (' + spell.points + ')').join(', ') || 'Заклинания не выбраны.'}</p>` : ''}</div>
     </div>
     <h3>Защита <small>Опциональное правило</small></h3>
-    ${defenses.length ? `<ul class="compact-list">${defenses.map((row) => `<li>${escape(row.item.name)} · ${armorRules[row.id]}</li>`).join('')}</ul>` : '<p>Без табличной защиты.</p>'}
+    ${defenses.length ? `<ul class="compact-list">${defenses.map((row) => `<li>${escape(row.item.name)} · ${armorRules[row.item.baseId ?? row.id]}</li>`).join('')}</ul>` : '<p>Без табличной защиты.</p>'}
     ${wornBreastplate ? '<p>Для кирасы в таблице спасбросков отдельный показатель не указан.</p>' : ''}
+    ${result.heirloomDefense ? `<p>Магическая прибавка к защите ${plus(result.heirloomDefense)}%.</p>` : ''}
     <h3>Снаряжение</h3><p>${supplySummary()}</p><p>Старт ${money(result.funds)} · потрачено ${money(result.spent)} · остаток ${money(result.balance)}</p>
     ${inv ? `<div class="table-wrap"><table><thead><tr><th>Предмет</th><th>Кол.</th><th>Вес</th><th>Где</th><th>Потрачено</th></tr></thead><tbody>${inv}</tbody></table></div>` : '<p>Пусто.</p>'}
+    ${state.inheritance ? `<h3>Наследство</h3><p>${inheritanceText()}</p>
+      ${result.inheritance.items.map((item) => `<p><strong>${escape(item.name)}</strong> · ${item.notes.map(escape).join(' ')}</p>`).join('')}` : ''}
     ${result.mounts.map((mount) => `<p>${escape(mountLabel(mount))} · груз ${weight(mount.burden)} · скорость ${inch(mount.speed)}${mount.ridden ? ' · с всадником' : ''}</p>`).join('')}
     ${print && state.notes.trim() ? '<h3>Заметки</h3><p class="notes-print">' + escape(state.notes) + '</p>' : ''}`;
 }
@@ -437,7 +462,7 @@ function addItem(id, custom) {
 
 function removeItem(uid) {
   state.items = state.items.filter((row) => row.uid !== uid);
-  for (const row of [...state.items, ...Object.values(state.kit)]) {
+  for (const row of [...state.items, ...Object.values(state.kit), ...Object.values(state.heirloomGear)]) {
     if (row.position === uid) row.position = 'person';
   }
   if (state.rider === uid) state.rider = '';
@@ -446,6 +471,9 @@ function removeItem(uid) {
 }
 
 function editableRow(uid) {
+  if (uid.startsWith('heir-')) {
+    return state.heirloomGear[uid] ??= {position: 'person', equipped: false};
+  }
   if (uid.startsWith('kit-')) {
     const row = result.items.find((entry) => entry.uid === uid);
     return state.kit[row.id] ??= {position: row.position, equipped: row.equipped};
@@ -491,6 +519,11 @@ const actions = {
   },
   'training-roll': () => { state.trainingBonus = rollTraining(); commit('Прибавка за подготовку: ' + state.trainingBonus + '.'); },
   mortality: () => { if (!state.mortality) { state.mortality = naturalDeath(result); commit('Возрастная проверка проведена.'); } },
+  inheritance: () => {
+    if (state.inheritance) return;
+    state.inheritance = rollInheritance(state.age, die);
+    commit(state.inheritance.check <= state.age ? 'Наследство получено. Деньги и предметы учтены.' : 'Проверка завершена. Наследства нет.');
+  },
   'clear-mortality': () => { state.mortality = null; commit('Возрастная проверка сброшена.'); },
   'add-course': manageCourse,
   'remove-course': removeCourse,
@@ -544,7 +577,7 @@ document.addEventListener('input', (event) => {
 
 document.addEventListener('change', async (event) => {
   const input = event.target;
-  const {field, qty, position, equip, mountTraining, spell} = input.dataset;
+  const {field, qty, position, equip, mountTraining, spell, heirWeight} = input.dataset;
   const uiField = input.dataset.ui;
   if (input.id === 'import-file') {
     const file = input.files[0];
@@ -603,6 +636,10 @@ document.addEventListener('change', async (event) => {
       return message('Не хватает средств, чтобы увеличить количество.');
     }
     row.qty = next;
+    commit();
+  }
+  if (heirWeight) {
+    if (Number.isFinite(input.valueAsNumber)) editableRow(heirWeight).weight = clamp(input.valueAsNumber, 0, 1000000);
     commit();
   }
   if (position) {
